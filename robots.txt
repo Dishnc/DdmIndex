@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://buy.aisuper.top/sitemap.xml

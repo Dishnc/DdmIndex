@@ -1,0 +1,7 @@
+{
+  "project_key": "p_ddm_portal_web",
+  "artifact_type": "server_patch.zip",
+  "deploy_root": "public",
+  "entry": "public/index.html",
+  "restart_required": false
+}

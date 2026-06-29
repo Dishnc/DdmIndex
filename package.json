@@ -1,0 +1,15 @@
+{
+  "name": "p-ddm-portal-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Ddm加速器官网门户静态网站",
+  "scripts": {
+    "build": "bash scripts/build.sh V1.0.0",
+    "package": "bash scripts/package_server_patch.sh V1.0.0 local"
+  },
+  "keywords": [
+    "ddm",
+    "portal",
+    "static-site"
+  ]
+}
