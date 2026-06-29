@@ -1,0 +1,99 @@
+name: Build Python Server
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_key:
+        description: "Project key"
+        required: false
+        default: "p_ddm_portal_web"
+      version_name:
+        description: "Version name"
+        required: false
+        default: "V1.0.0"
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_KEY: p_ddm_portal_web
+      DEFAULT_VERSION_NAME: V1.0.0
+      XUI_CI_UPLOAD_URL: ${{ secrets.XUI_CI_UPLOAD_URL }}
+      XUI_CI_UPLOAD_TOKEN: ${{ secrets.XUI_CI_UPLOAD_TOKEN }}
+      PUBLISH_GITHUB_RELEASES: ${{ secrets.PUBLISH_GITHUB_RELEASES }}
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Resolve build variables
+        shell: bash
+        run: |
+          VERSION_INPUT="${{ github.event.inputs.version_name }}"
+          PROJECT_INPUT="${{ github.event.inputs.project_key }}"
+          if [ -z "$VERSION_INPUT" ]; then VERSION_INPUT="$DEFAULT_VERSION_NAME"; fi
+          if [ -z "$PROJECT_INPUT" ]; then PROJECT_INPUT="$PROJECT_KEY"; fi
+          VERSION_CODE="$(echo "$VERSION_INPUT" | tr -cd '0-9')"
+          if [ -z "$VERSION_CODE" ]; then VERSION_CODE="100"; fi
+          echo "VERSION_NAME=$VERSION_INPUT" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
+          echo "PROJECT_KEY=$PROJECT_INPUT" >> "$GITHUB_ENV"
+          echo "TAG_NAME=${PROJECT_INPUT}-${VERSION_INPUT}" >> "$GITHUB_ENV"
+      - name: Build static site
+        shell: bash
+        run: |
+          chmod +x scripts/*.sh
+          bash scripts/build.sh "$VERSION_NAME"
+      - name: Package release artifacts
+        shell: bash
+        run: |
+          bash scripts/package_server_patch.sh "$VERSION_NAME" "$GITHUB_SHA"
+          sha256sum release/*.zip | tee release/SHA256SUMS.txt
+      - name: Upload GitHub Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PROJECT_KEY }}-${{ env.VERSION_NAME }}-server-patch
+          path: |
+            release/*.zip
+            release/SHA256SUMS.txt
+          if-no-files-found: error
+      - name: Publish GitHub Release when enabled
+        if: env.PUBLISH_GITHUB_RELEASES == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG_NAME" release/*.zip release/SHA256SUMS.txt \
+            --title "${PROJECT_KEY} ${VERSION_NAME}" \
+            --notes "Ddm加速器门户网站 ${VERSION_NAME} 自动构建发布" \
+            || gh release upload "$TAG_NAME" release/*.zip release/SHA256SUMS.txt --clobber
+      - name: Optional x-ui project center callback
+        shell: bash
+        run: |
+          if [ -z "${XUI_CI_UPLOAD_URL:-}" ]; then
+            echo "XUI_CI_UPLOAD_URL not configured, skip x-ui callback."
+            exit 0
+          fi
+          ARTIFACT="release/${PROJECT_KEY}_server_patch_${VERSION_NAME}.zip"
+          SIZE_BYTES="$(stat -c%s "$ARTIFACT")"
+          SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+          curl --retry 3 --retry-delay 3 --connect-timeout 20 --max-time 180 \
+            -X POST "$XUI_CI_UPLOAD_URL" \
+            -H "X-CI-Token: ${XUI_CI_UPLOAD_TOKEN:-}" \
+            -F "project_key=${PROJECT_KEY}" \
+            -F "version_name=${VERSION_NAME}" \
+            -F "version_code=${VERSION_CODE}" \
+            -F "git_sha=${GITHUB_SHA}" \
+            -F "github_run_id=${GITHUB_RUN_ID}" \
+            -F "status=success" \
+            -F "artifact_name=$(basename "$ARTIFACT")" \
+            -F "artifact_type=server_patch.zip" \
+            -F "artifact_size=${SIZE_BYTES}" \
+            -F "artifact_sha256=${SHA256}" \
+            -F "release_notes=Ddm加速器门户网站 ${VERSION_NAME} 初始版本发布" \
+            -F "artifact=@${ARTIFACT}" \
+            || echo "::warning::x-ui callback failed. Build artifact has still been created."
