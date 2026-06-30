@@ -1,99 +1,57 @@
-name: Build Python Server
+name: Build and Publish Web
 
 on:
   workflow_dispatch:
-    inputs:
-      project_key:
-        description: "Project key"
-        required: false
-        default: "p_ddm_portal_web"
-      version_name:
-        description: "Version name"
-        required: false
-        default: "V1.0.0"
   push:
     branches: [ main ]
-
-permissions:
-  contents: write
-  actions: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    env:
-      PROJECT_KEY: p_ddm_portal_web
-      DEFAULT_VERSION_NAME: V1.0.0
-      XUI_CI_UPLOAD_URL: ${{ secrets.XUI_CI_UPLOAD_URL }}
-      XUI_CI_UPLOAD_TOKEN: ${{ secrets.XUI_CI_UPLOAD_TOKEN }}
-      PUBLISH_GITHUB_RELEASES: ${{ secrets.PUBLISH_GITHUB_RELEASES }}
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-      - name: Resolve build variables
+      - uses: actions/checkout@v4
+
+      - name: Prepare artifact
         shell: bash
         run: |
-          VERSION_INPUT="${{ github.event.inputs.version_name }}"
-          PROJECT_INPUT="${{ github.event.inputs.project_key }}"
-          if [ -z "$VERSION_INPUT" ]; then VERSION_INPUT="$DEFAULT_VERSION_NAME"; fi
-          if [ -z "$PROJECT_INPUT" ]; then PROJECT_INPUT="$PROJECT_KEY"; fi
-          VERSION_CODE="$(echo "$VERSION_INPUT" | tr -cd '0-9')"
-          if [ -z "$VERSION_CODE" ]; then VERSION_CODE="100"; fi
-          echo "VERSION_NAME=$VERSION_INPUT" >> "$GITHUB_ENV"
-          echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
-          echo "PROJECT_KEY=$PROJECT_INPUT" >> "$GITHUB_ENV"
-          echo "TAG_NAME=${PROJECT_INPUT}-${VERSION_INPUT}" >> "$GITHUB_ENV"
-      - name: Build static site
+          set -euo pipefail
+          mkdir -p release
+          zip -r release/p_ddm_portal_web-V1.0.0-source.zip . -x ".git/*" "release/*"
+
+      - name: Detect artifact file
+        id: artifact
         shell: bash
         run: |
-          chmod +x scripts/*.sh
-          bash scripts/build.sh "$VERSION_NAME"
-      - name: Package release artifacts
-        shell: bash
-        run: |
-          bash scripts/package_server_patch.sh "$VERSION_NAME" "$GITHUB_SHA"
-          sha256sum release/*.zip | tee release/SHA256SUMS.txt
-      - name: Upload GitHub Actions artifact
+          set -euo pipefail
+          ARTIFACT_FILE="$(find release -maxdepth 1 -type f | sort | head -n 1)"
+          if [ -z "$ARTIFACT_FILE" ]; then
+            echo "release 目录下没有找到可回传的产物文件" >&2
+            exit 1
+          fi
+          ARTIFACT_NAME="$(basename "$ARTIFACT_FILE")"
+          ARTIFACT_SIZE="$(wc -c < "$ARTIFACT_FILE" | tr -d ' ')"
+          ARTIFACT_SHA256="$(sha256sum "$ARTIFACT_FILE" | cut -d ' ' -f 1)"
+          echo "file=$ARTIFACT_FILE" >> "$GITHUB_OUTPUT"
+          echo "name=$ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+          echo "size=$ARTIFACT_SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ARTIFACT_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact to GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.PROJECT_KEY }}-${{ env.VERSION_NAME }}-server-patch
-          path: |
-            release/*.zip
-            release/SHA256SUMS.txt
-          if-no-files-found: error
-      - name: Publish GitHub Release when enabled
-        if: env.PUBLISH_GITHUB_RELEASES == 'true'
-        shell: bash
+          name: p_ddm_portal_web-V1.0.0
+          path: ${{ steps.artifact.outputs.file }}
+
+      - name: Upload release package to x-ui Project Center
+        if: success()
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$TAG_NAME" release/*.zip release/SHA256SUMS.txt \
-            --title "${PROJECT_KEY} ${VERSION_NAME}" \
-            --notes "Ddm加速器门户网站 ${VERSION_NAME} 自动构建发布" \
-            || gh release upload "$TAG_NAME" release/*.zip release/SHA256SUMS.txt --clobber
-      - name: Optional x-ui project center callback
+          XUI_CI_UPLOAD_URL: ${{ secrets.XUI_CI_UPLOAD_URL }}
+          XUI_CI_UPLOAD_TOKEN: ${{ secrets.XUI_CI_UPLOAD_TOKEN }}
         shell: bash
         run: |
-          if [ -z "${XUI_CI_UPLOAD_URL:-}" ]; then
-            echo "XUI_CI_UPLOAD_URL not configured, skip x-ui callback."
-            exit 0
+          set -euo pipefail
+          if [ -z "$XUI_CI_UPLOAD_URL" ] || [ -z "$XUI_CI_UPLOAD_TOKEN" ]; then
+            echo "缺少 GitHub Secrets：XUI_CI_UPLOAD_URL 或 XUI_CI_UPLOAD_TOKEN" >&2
+            exit 1
           fi
-          ARTIFACT="release/${PROJECT_KEY}_server_patch_${VERSION_NAME}.zip"
-          SIZE_BYTES="$(stat -c%s "$ARTIFACT")"
-          SHA256="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
-          curl --retry 3 --retry-delay 3 --connect-timeout 20 --max-time 180 \
-            -X POST "$XUI_CI_UPLOAD_URL" \
-            -H "X-CI-Token: ${XUI_CI_UPLOAD_TOKEN:-}" \
-            -F "project_key=${PROJECT_KEY}" \
-            -F "version_name=${VERSION_NAME}" \
-            -F "version_code=${VERSION_CODE}" \
-            -F "git_sha=${GITHUB_SHA}" \
-            -F "github_run_id=${GITHUB_RUN_ID}" \
-            -F "status=success" \
-            -F "artifact_name=$(basename "$ARTIFACT")" \
-            -F "artifact_type=server_patch.zip" \
-            -F "artifact_size=${SIZE_BYTES}" \
-            -F "artifact_sha256=${SHA256}" \
-            -F "release_notes=Ddm加速器门户网站 ${VERSION_NAME} 初始版本发布" \
-            -F "artifact=@${ARTIFACT}" \
-            || echo "::warning::x-ui callback failed. Build artifact has still been created."
+          curl --fail --show-error --location             -H "X-CI-Token: $XUI_CI_UPLOAD_TOKEN"             -F "project_key=p_ddm_portal_web"             -F "version_name=V1.0.0"             -F "version_code=${{ github.run_number }}"             -F "git_sha=${{ github.sha }}"             -F "github_run_id=${{ github.run_id }}"             -F "workflow_name=${{ github.workflow }}"             -F "status=success"             -F "artifact_name=${{ steps.artifact.outputs.name }}"             -F "artifact_type=source.zip"             -F "artifact_size=${{ steps.artifact.outputs.size }}"             -F "artifact_sha256=${{ steps.artifact.outputs.sha256 }}"             -F "release_notes=GitHub Actions 自动打包成功并回传 x-ui 项目中心"             -F "artifact=@${{ steps.artifact.outputs.file }}"             "$XUI_CI_UPLOAD_URL"
