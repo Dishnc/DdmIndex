@@ -54,4 +54,12 @@ jobs:
             echo "缺少 GitHub Secrets：XUI_CI_UPLOAD_URL 或 XUI_CI_UPLOAD_TOKEN" >&2
             exit 1
           fi
-          curl --fail --show-error --location             -H "X-CI-Token: $XUI_CI_UPLOAD_TOKEN"             -F "project_key=p_ddm_portal_web"             -F "version_name=V1.0.0"             -F "version_code=${{ github.run_number }}"             -F "git_sha=${{ github.sha }}"             -F "github_run_id=${{ github.run_id }}"             -F "workflow_name=${{ github.workflow }}"             -F "status=success"             -F "artifact_name=${{ steps.artifact.outputs.name }}"             -F "artifact_type=source.zip"             -F "artifact_size=${{ steps.artifact.outputs.size }}"             -F "artifact_sha256=${{ steps.artifact.outputs.sha256 }}"             -F "release_notes=GitHub Actions 自动打包成功并回传 x-ui 项目中心"             -F "artifact=@${{ steps.artifact.outputs.file }}"             "$XUI_CI_UPLOAD_URL"
+          RESPONSE_FILE="/tmp/xui-ci-upload-response.json"
+          HTTP_CODE="$(curl --show-error --location --silent --output "$RESPONSE_FILE" --write-out "%{http_code}"             -H "X-CI-Token: $XUI_CI_UPLOAD_TOKEN"             -H "Authorization: Bearer $XUI_CI_UPLOAD_TOKEN"             -F "ci_token=$XUI_CI_UPLOAD_TOKEN"             -F "project_key=p_ddm_portal_web"             -F "version_name=V1.0.0"             -F "version_code=${{ github.run_number }}"             -F "git_sha=${{ github.sha }}"             -F "github_run_id=${{ github.run_id }}"             -F "workflow_name=${{ github.workflow }}"             -F "status=success"             -F "artifact_name=${{ steps.artifact.outputs.name }}"             -F "artifact_type=source.zip"             -F "artifact_size=${{ steps.artifact.outputs.size }}"             -F "artifact_sha256=${{ steps.artifact.outputs.sha256 }}"             -F "release_notes=GitHub Actions 自动打包成功并回传 x-ui 项目中心"             -F "artifact=@${{ steps.artifact.outputs.file }}"             "$XUI_CI_UPLOAD_URL")"
+          echo "x-ui CI upload HTTP status: $HTTP_CODE"
+          cat "$RESPONSE_FILE" || true
+          echo
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
+            echo "x-ui CI upload failed. Please check XUI_CI_UPLOAD_URL / XUI_CI_UPLOAD_TOKEN in GitHub repository secrets." >&2
+            exit 22
+          fi
